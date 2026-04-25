@@ -14,6 +14,9 @@ client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # Load all enriched jobs from the database into a pandas DataFrame
 def load_jobs():
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
+
     connection = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("""
         SELECT title, company, location, salary_min, salary_max,
@@ -91,7 +94,6 @@ else:
     # --- Sidebar filters ---
     st.sidebar.header("Filters")
 
-    # Company filter
     all_companies = sorted(df["company"].dropna().unique().tolist())
     selected_companies = st.sidebar.multiselect(
         "Company",
@@ -99,7 +101,6 @@ else:
         default=[]
     )
 
-    # Seniority filter
     all_seniority = sorted(df["seniority"].dropna().unique().tolist())
     selected_seniority = st.sidebar.multiselect(
         "Seniority",
@@ -107,13 +108,12 @@ else:
         default=[]
     )
 
-    # Remote filter
     remote_option = st.sidebar.radio(
         "Work Type",
         options=["All", "Remote Only", "On-site Only"]
     )
 
-    # Apply filters to the dataframe
+    # Apply filters
     filtered_df = df.copy()
 
     if selected_companies:
