@@ -5,6 +5,8 @@ import plotly.express as px
 import anthropic
 import os
 from dotenv import load_dotenv
+from scorer import score_all_jobs
+import json
 
 load_dotenv()
 
@@ -233,3 +235,148 @@ else:
         filtered_df[["title", "company", "location", "seniority", "remote", "skills"]],
         use_container_width=True
     )
+
+    st.divider()
+
+    # --- Job Fit Scorer ---
+    st.subheader("Job Fit Scorer")
+    st.caption("Upload your resume and Claude will score the top 5 matching jobs and generate ATS keywords.")
+
+    uploaded_resume = st.file_uploader("Upload your resume (PDF)", type=["pdf"])
+
+    if uploaded_resume is not None:
+        if st.button("Score Jobs"):
+            # Extract text from the uploaded PDF
+            with st.spinner("Reading your resume..."):
+                try:
+                    import PyPDF2
+                    pdf_reader = PyPDF2.PdfReader(uploaded_resume)
+                    resume_text = ""
+                    for page in pdf_reader.pages:
+                        resume_text += page.extract_text()
+
+                    if not resume_text.strip():
+                        st.error("Could not extract text from your resume. Make sure it is not a scanned image.")
+                        st.stop()
+
+                except Exception as error:
+                    st.error(f"Failed to read PDF: {error}")
+                    st.stop()
+
+            # Ask Claude to extract a structured profile from the resume
+            with st.spinner("Claude is reading your resume..."):
+                try:
+                    profile_prompt = f"""
+Read this resume and extract a candidate profile. Return JSON only — no explanation, no markdown:
+
+{{
+  "years_experience": "number or null",
+  "skills": ["list of analytical and business skills"],
+  "tools": ["list of software tools and platforms"],
+  "industry": "industry background in a few words",
+  "seniority": "entry, mid, or senior"
+}}
+
+Resume:
+{resume_text[:3000]}
+"""
+                    profile_message = client.messages.create(
+                        model="claude-sonnet-4-5",
+                        max_tokens=512,
+                        messages=[{"role": "user", "content": profile_prompt}]
+                    )
+                    raw_profile = profile_message.content[0].text
+                    cleaned_profile = raw_profile.strip()
+                    if cleaned_profile.startswith("```"):
+                        cleaned_profile = cleaned_profile.split("\n", 1)[1]
+                    if cleaned_profile.endswith("```"):
+                        cleaned_profile = cleaned_profile.rsplit("\n", 1)[0]
+
+                    candidate = json.loads(cleaned_profile)
+
+                    st.success("Resume read successfully.")
+                    st.markdown(f"**Detected profile:** {candidate.get('seniority')} level | {candidate.get('years_experience')} years | {candidate.get('industry')}")
+                    st.markdown(f"**Skills found:** {', '.join(candidate.get('skills', []))}")
+                    st.markdown(f"**Tools found:** {', '.join(candidate.get('tools', []))}")
+
+                except Exception as error:
+                    st.error(f"Failed to extract profile from resume: {error}")
+                    st.stop()
+
+            # Build candidate profile string for scoring
+            candidate_profile = f"""
+Years of experience: {candidate.get('years_experience')}
+Seniority: {candidate.get('seniority')}
+Industry: {candidate.get('industry')}
+Skills: {', '.join(candidate.get('skills', []))}
+Tools: {', '.join(candidate.get('tools', []))}
+"""
+
+            # Score all jobs against the extracted profile
+            with st.spinner("Scoring all jobs against your profile..."):
+                scored_jobs = score_all_jobs(candidate_profile)
+
+            top_5 = scored_jobs[:5]
+            st.success(f"Top 5 matches out of {len(scored_jobs)} jobs.")
+
+            for job in top_5:
+                score = job["score"]
+                color = "green" if score >= 70 else "orange" if score >= 50 else "red"
+                st.markdown(f"**{job['title']}** — :{color}[Score: {score}/100]")
+                st.markdown(f"✅ {' | '.join(job['match_reasons'])}")
+                st.markdown(f"⚠️ {' | '.join(job['gap_reasons'])}")
+                st.divider()
+
+            # Generate ATS keywords from top 5 matches
+            st.subheader("ATS Keywords & Resume Tips")
+            with st.spinner("Generating ATS keywords from top matches..."):
+                top_5_summary = "\n".join([
+                    f"Job: {j['title']} | Matches: {j['match_reasons']} | Gaps: {j['gap_reasons']}"
+                    for j in top_5
+                ])
+
+                ats_prompt = f"""
+You are a resume expert. Based on these top 5 job matches for a candidate with these skills: {', '.join(candidate.get('skills', []))}, return JSON only:
+
+{{
+  "must_have_keywords": ["top 8 keywords to add to resume immediately"],
+  "nice_to_have_keywords": ["5 keywords that would strengthen the resume"],
+  "resume_tips": ["3 specific actionable tips to improve the resume for these roles"]
+}}
+
+Job match data:
+{top_5_summary}
+"""
+                try:
+                    ats_message = client.messages.create(
+                        model="claude-sonnet-4-5",
+                        max_tokens=512,
+                        messages=[{"role": "user", "content": ats_prompt}]
+                    )
+                    raw_ats = ats_message.content[0].text
+                    cleaned_ats = raw_ats.strip()
+                    if cleaned_ats.startswith("```"):
+                        cleaned_ats = cleaned_ats.split("\n", 1)[1]
+                    if cleaned_ats.endswith("```"):
+                        cleaned_ats = cleaned_ats.rsplit("\n", 1)[0]
+
+                    ats_data = json.loads(cleaned_ats)
+
+                    col_ats1, col_ats2 = st.columns(2)
+
+                    with col_ats1:
+                        st.markdown("**Must-Have Keywords**")
+                        for kw in ats_data.get("must_have_keywords", []):
+                            st.markdown(f"- {kw}")
+
+                        st.markdown("**Nice-to-Have Keywords**")
+                        for kw in ats_data.get("nice_to_have_keywords", []):
+                            st.markdown(f"- {kw}")
+
+                    with col_ats2:
+                        st.markdown("**Resume Tips**")
+                        for tip in ats_data.get("resume_tips", []):
+                            st.markdown(f"- {tip}")
+
+                except Exception as error:
+                    st.error(f"ATS generation failed: {error}")
