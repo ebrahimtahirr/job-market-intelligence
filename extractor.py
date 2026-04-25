@@ -15,9 +15,14 @@ def extract_signals(job_description):
     prompt = f"""
 Extract key information from this job posting. Return JSON only — no explanation, no markdown, no extra text.
 
+Rules:
+- "skills" means analytical or business abilities (e.g. data analysis, forecasting, stakeholder management)
+- "tools" means specific named software, platforms, or programming languages only (e.g. Excel, Tableau, Python, SQL, Salesforce, AWS). Do NOT include general descriptions or industry jargon.
+- If no specific tools are mentioned, return an empty list for tools.
+
 {{
   "skills": ["max 6 skills"],
-  "tools": ["max 6 tools"],
+  "tools": ["max 6 specific software tools or languages only"],
   "experience_years": "number or null",
   "remote": true or false,
   "seniority": "entry, mid, senior, or null"
