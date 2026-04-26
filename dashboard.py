@@ -4,9 +4,9 @@ import pandas as pd
 import plotly.express as px
 import anthropic
 import os
+import json
 from dotenv import load_dotenv
 from scorer import score_all_jobs
-import json
 
 load_dotenv()
 
@@ -134,7 +134,7 @@ else:
     col1.metric("Total Jobs", len(filtered_df))
     col2.metric("Remote Jobs", int(filtered_df["remote"].sum()))
     col3.metric("Companies", filtered_df["company"].nunique())
-    col4.metric("Avg Salary", f"${filtered_df['salary_min'].mean():,.0f}" 
+    col4.metric("Avg Salary", f"${filtered_df['salary_min'].mean():,.0f}"
                 if filtered_df["salary_min"].notna().any() else "N/A")
 
     st.divider()
@@ -204,14 +204,11 @@ else:
     st.divider()
 
     # --- Top hiring locations ---
-        # --- Top hiring locations ---
-    # Filter out vague location values that aren't real cities
     bad_locations = ["us", "uk", "canada", "remote", "united states"]
     location_df = filtered_df[
         ~filtered_df["location"].str.lower().isin(bad_locations)
     ]["location"].value_counts().reset_index().head(10)
     location_df.columns = ["Location", "Count"]
-    
     if not location_df.empty:
         fig_location = px.bar(location_df, x="Count", y="Location", orientation="h",
                               title="Top 10 Hiring Locations",
@@ -245,7 +242,7 @@ else:
 
     # --- Tab 1: Match against database ---
     with scorer_tab1:
-        st.caption("Upload your resume and Claude will score the top 5 matching jobs from the database.")
+        st.caption("Upload your resume and Claude will score the top 5 matching jobs from the database, prioritizing recent postings.")
 
         uploaded_resume = st.file_uploader("Upload your resume (PDF)", type=["pdf"], key="resume_db")
 
@@ -320,9 +317,22 @@ Tools: {', '.join(candidate.get('tools', []))}
                 st.success(f"Top 5 matches out of {len(scored_jobs)} jobs.")
 
                 for job in top_5:
-                    score = job["score"]
+                    score = job["final_score"]
+                    relevance = job["relevance_score"]
+                    hours_ago = job["hours_ago"]
                     color = "green" if score >= 70 else "orange" if score >= 50 else "red"
-                    st.markdown(f"**{job['title']}** — :{color}[Score: {score}/100]")
+
+                    if hours_ago <= 24:
+                        recency_label = "🟢 Posted in last 24 hours"
+                    elif hours_ago <= 72:
+                        recency_label = "🟡 Posted in last 3 days"
+                    elif hours_ago <= 168:
+                        recency_label = "🟠 Posted in last week"
+                    else:
+                        recency_label = "⚪ Posted over a week ago"
+
+                    st.markdown(f"**{job['title']}** — {job.get('company', 'Unknown')} — {job.get('location', 'Unknown')}")
+                    st.markdown(f":{color}[Score: {score}/100] (Relevance: {relevance}/100) | {recency_label}")
                     st.markdown(f"✅ {' | '.join(job['match_reasons'])}")
                     st.markdown(f"⚠️ {' | '.join(job['gap_reasons'])}")
                     st.divider()
@@ -382,7 +392,8 @@ Job match data:
         st.caption("Upload your resume and paste any job description to get a match score and ATS keywords.")
 
         uploaded_resume_custom = st.file_uploader("Upload your resume (PDF)", type=["pdf"], key="resume_custom")
-        custom_job = st.text_area("Paste the job description here", height=200, placeholder="Copy and paste the full job description from LinkedIn, a company website, or anywhere else...")
+        custom_job = st.text_area("Paste the job description here", height=200,
+                                  placeholder="Copy and paste the full job description from LinkedIn, a company website, or anywhere else...")
 
         if uploaded_resume_custom is not None and custom_job.strip():
             if st.button("Score This Job", key="score_custom"):
