@@ -29,20 +29,18 @@ Return JSON only — no explanation, no markdown, no extra text:
   "gap_reasons": ["up to 3 skills or experience gaps"]
 }}
 """
-
     try:
         message = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=256,
             messages=[{"role": "user", "content": prompt}]
         )
-        raw = message.content[0].text
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1]
-        if cleaned.endswith("```"):
-            cleaned = cleaned.rsplit("\n", 1)[0]
-        return json.loads(cleaned)
+        raw = message.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1]
+        if raw.endswith("```"):
+            raw = raw.rsplit("\n", 1)[0]
+        return json.loads(raw)
 
     except Exception as error:
         print(f"Scoring failed for {job_title}: {error}")
@@ -56,15 +54,13 @@ def hours_since_posted(date_string):
     try:
         posted = datetime.strptime(date_string, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
-        delta = now - posted
-        return delta.total_seconds() / 3600
+        return (now - posted).total_seconds() / 3600
     except Exception:
         return 9999
 
 
-# Calculate a combined score that weighs both relevance and recency
+# Calculate combined score weighing relevance and recency
 def combined_score(relevance_score, hours_ago):
-    # Recency bonus: full bonus if posted within 24 hours, drops off after that
     if hours_ago <= 24:
         recency_bonus = 20
     elif hours_ago <= 72:
@@ -73,12 +69,33 @@ def combined_score(relevance_score, hours_ago):
         recency_bonus = 5
     else:
         recency_bonus = 0
-
     return relevance_score + recency_bonus
 
 
-# Score all jobs in the database against a candidate profile
-def score_all_jobs(candidate_profile):
+# Fast keyword pre-filter — no Claude involved, pure Python
+# Returns a relevance score based on how many candidate keywords appear in the job
+def keyword_match_score(candidate_keywords, job_text):
+    if not job_text:
+        return 0
+    job_text_lower = job_text.lower()
+    matches = sum(1 for keyword in candidate_keywords if keyword.lower() in job_text_lower)
+    return matches
+
+
+# Extract keywords from candidate profile string
+def extract_keywords(candidate_profile):
+    keywords = []
+    for line in candidate_profile.split("\n"):
+        if "skills:" in line.lower() or "tools:" in line.lower():
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                items = [k.strip() for k in parts[1].split(",") if k.strip()]
+                keywords.extend(items)
+    return keywords
+
+
+# Score all jobs — pre-filter with keywords, then send top 200 to Claude
+def score_all_jobs(candidate_profile, max_claude_calls=200):
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
 
@@ -92,13 +109,28 @@ def score_all_jobs(candidate_profile):
     jobs = cursor.fetchall()
     connection.close()
 
-    results = []
+    # Step 1 — keyword pre-filter in Python (free, instant)
+    candidate_keywords = extract_keywords(candidate_profile)
+    print(f"Extracted {len(candidate_keywords)} keywords from profile.")
+    print(f"Pre-filtering {len(jobs)} jobs...")
+
+    scored_by_keywords = []
     for job_id, title, description, date_fetched, company, location in jobs:
+        kw_score = keyword_match_score(candidate_keywords, f"{title} {description}")
+        scored_by_keywords.append((kw_score, job_id, title, description, date_fetched, company, location))
+
+    # Sort by keyword score and take top 200
+    scored_by_keywords.sort(key=lambda x: x[0], reverse=True)
+    top_candidates = scored_by_keywords[:max_claude_calls]
+    print(f"Sending top {len(top_candidates)} jobs to Claude for scoring.")
+
+    # Step 2 — Claude scoring on top candidates only
+    results = []
+    for kw_score, job_id, title, description, date_fetched, company, location in top_candidates:
         result = score_job(title, description, candidate_profile)
         if result:
             hours_ago = hours_since_posted(date_fetched)
             final_score = combined_score(result.get("score", 0), hours_ago)
-
             results.append({
                 "job_id": job_id,
                 "title": title,
