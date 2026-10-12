@@ -14,6 +14,23 @@ load_dotenv()
 DB_PATH = "jobs.db"
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
+AI_PAUSED_NOTE = "AI features are paused in this public demo. The charts, filters and H-1B toggle above are fully live."
+
+
+def is_ai_error(error):
+    """True when a Claude call failed because of the API itself (bad or missing key, rate limit, outage)."""
+    if isinstance(error, anthropic.APIError):
+        return True
+    text = str(error).lower()
+    return "authentication method" in text or "api_key" in text or "x-api-key" in text
+
+
+def report_ai_error(error, what):
+    if is_ai_error(error):
+        st.info(AI_PAUSED_NOTE)
+    else:
+        st.error(f"{what}: {error}")
+
 # --- Page config ---
 st.set_page_config(
     page_title="JobLens — Analyst Market Intelligence",
@@ -377,6 +394,8 @@ Seniority breakdown: {seniority_counts}
         )
         return message.content[0].text
     except Exception as error:
+        if is_ai_error(error):
+            return AI_PAUSED_NOTE
         return f"Briefing unavailable: {error}"
 
 
@@ -617,7 +636,7 @@ Resume:
                         st.markdown(f"**Tools:** {', '.join(candidate.get('tools', []))}")
 
                 except Exception as e:
-                    st.error(f"Failed to extract profile: {e}")
+                    report_ai_error(e, "Failed to extract profile")
                     st.stop()
 
             candidate_profile = f"""
@@ -629,6 +648,10 @@ Tools: {', '.join(candidate.get('tools', []))}
 """
             with st.spinner("Scoring all jobs..."):
                 scored_jobs = score_all_jobs(candidate_profile)
+
+            if not scored_jobs:
+                st.info(AI_PAUSED_NOTE)
+                st.stop()
 
             top_5 = scored_jobs[:5]
             st.success(f"Top 5 matches from {len(scored_jobs)} jobs")
@@ -711,7 +734,7 @@ Job matches: {top_5_summary}
 </div>""", unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"ATS generation failed: {e}")
+                    report_ai_error(e, "ATS generation failed")
 
 with scorer_tab2:
     st.caption("Paste any job description from LinkedIn or any company website and get an instant match score tailored to your resume.")
@@ -801,4 +824,4 @@ Return JSON only:
 </div>""", unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"Analysis failed: {e}")
+                    report_ai_error(e, "Analysis failed")
